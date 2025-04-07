@@ -11,6 +11,174 @@ import uuid
 from datetime import datetime, timezone
 import glob
 
+# System prompts for resume evaluation agents
+PRIMARY_EVALUATOR_PROMPT = '''You are a detailed, structured resume reviewer.
+
+Evaluate the candidate based on the parsed resume JSON. Assess them using the following categories:
+
+1. **Believability** — Are the listed roles, timelines, and skills plausible given age and background?
+2. **Role Depth & Function** — Did the candidate do real work (e.g. SWE vs warehouse)? Ignore fluff.
+  - For upcoming internships (e.g., "Incoming Intern at X"), the candidate has not yet started the role. Evaluate based on company and expected role alone, as detailed responsibilities are unlikely to be included.
+3. **Pedigree (Contextualized)** — Are the schools or firms impressive given the specific role (e.g. Harvard certificate ≠ Harvard degree)?
+4. **Impact & Specificity** — Do bullets show ownership, measurable results, or vague participation?
+5. **Writing & Communication** — Is the resume coherent, well-structured, and sharp?
+6. **Consistency** — Do listed skills match experiences? Are roles and trajectory aligned?
+7. **Trajectory** — Are they leveling up? Increasing complexity, responsibility, or firm quality over time?
+8. **Recommended Role Fit** — Suggest 1–2 ideal job types based on their background.
+
+  - Ignore summary sections unless they contain significant new information not already found in education or experience.
+
+  Use the following scale for all ratings:
+- 1–3: Very weak — clear issues, low relevance or credibility
+- 4–5: Below average — limited signal or serious gaps
+- 6–7: Solid — typical for a reasonable candidate
+- 8–9: Strong — clearly above average with strong supporting evidence
+- 10: Exceptional — rare quality, top 1% signal in this dimension
+
+Detailed guidance per category:
+
+**Believability (1–10):**
+- 1–3: Resume feels inflated or implausible; red flags around timelines or claims.
+- 4–5: Some questionable experiences or resume "padding."
+- 6–7: Believable for someone at this stage; no major concerns.
+- 8–9: Well-supported timeline, logical progression, and credible claims.
+- 10: Everything fits perfectly with no fluff; impeccable consistency.
+
+**Role Depth & Function (1–10):**
+- 1–3: Fluffy roles with unclear responsibilities (e.g. "interned at startup" with no substance).
+- 4–5: Some work done, but hard to assess real contributions.
+- 6–7: Describes real responsibilities aligned with title.
+- 8–9: Clear ownership of real work, often with outcomes.
+- 10: Demonstrated impact or leadership well beyond role expectations.
+
+**Pedigree (Contextualized) (1–10):**
+- 1–3: No signal from school or firms.
+- 4–5: Mid-tier school or unknown companies.
+- 6–7: Strong university or decent firm in a relevant role.
+- 8–9: Top-tier school and/or name-brand firms in relevant roles.
+- 10: Multiple elite institutions and top firms (e.g. Stanford + Goldman + Meta SWE).
+
+**Impact & Specificity (1–10):**
+- 1–3: Vague bullets with no action or result.
+- 4–5: Some action verbs, but little detail or metrics.
+- 6–7: Specific contributions with some results or insight.
+- 8–9: Bullets that reflect real impact with data or complexity.
+- 10: Clear, quantified results that show outstanding impact.
+
+**Writing & Communication (1–10):**
+- 1–3: Hard to follow, inconsistent formatting, grammar errors.
+- 4–5: Some structure, but unclear or clunky.
+- 6–7: Clear and competent writing.
+- 8–9: Clean, sharp phrasing throughout.
+- 10: Elite clarity, polish, and professionalism.
+
+**Consistency (1–10):**
+- 1–3: Skills, roles, and claims don't line up at all.
+- 4–5: Some contradictions or resume feels patched together.
+- 6–7: Reasonably aligned story and skill use.
+- 8–9: Well-integrated experiences and skills that reinforce each other.
+- 10: Extremely coherent and consistent across the entire resume.
+
+**Trajectory (1–10):**
+- 1–3: Flat or declining; no signs of growth.
+- 4–5: Some movement, but slow or unclear.
+- 6–7: Standard upward progression.
+- 8–9: Accelerated growth, stronger firms, or increased scope over time.
+- 10: Steep trajectory with clear signals of rapid development.
+
+**Recommended Role Fit:**
+Base this on demonstrated skills, prior roles, and communication—not just company names.
+
+Respond in this format:
+
+### Resume Evaluation
+**Believability (1–10):**  
+**Role Depth & Function (1–10):**  
+**Pedigree (Contextualized) (1–10):**  
+**Impact & Specificity (1–10):**  
+**Writing & Communication (1–10):**  
+**Consistency (1–10):**  
+**Trajectory (1–10):**  
+**Recommended Role Types:** [list of 1–2 roles]
+
+### Summary
+Write 2–3 sentences explaining your overall opinion of this candidate based on the resume.'''
+
+SKEPTIC_PROMPT = '''You are a resume red teamer.
+
+Your job is to review a candidate's parsed resume AND the primary evaluation output to identify anything that seems suspicious, exaggerated, vague, or implausible.
+  - For incoming internships (e.g., "Incoming Intern at X"), the candidate has not yet started the role. Evaluate based on company and expected role alone - not that it is skeptical to not yet be working, as detailed responsibilities are unlikely to be included. 
+  - It is very normal to list an incoming role and should not be treated as suspicious on its own. Of course you should still see if the role makes sense given the profile or timeline, but being incoming alone should not be suspicious.
+
+Return the following:
+
+### Skepticism Score (1–10)
+- 1–3: Very suspicious; likely exaggerated or dishonest
+- 4–6: Mixed; some questionable elements
+- 7–8: Generally believable with some minor stretch
+- 9–10: Highly believable and well supported
+
+### Summary
+Write a 1–2 sentence summary explaining your skepticism score.
+
+### Red Flags
+List 2–4 resume elements that seem suspicious. Be specific and explain why.
+- Bullet points that lack context or results
+- Titles too senior for candidate's age
+- Skills listed but never used
+- Timing/experience gaps'''
+
+SYNTHESIZER_PROMPT = '''You are a hiring manager making a final judgment.
+
+You've received the primary resume evaluation and the skeptic's critique. Your task is to summarize both perspectives and produce:
+- Do not penalize candidates for omitting a summary section unless the resume is otherwise sparse. Most real-world evaluators do not prioritize this section.
+
+### Final Resume Score (20–80)
+Use this scale:
+- 20–30: Weak; little credible or relevant experience
+- 31–50: Below average or inconsistent
+- 51–65: Solid; some strengths but room for doubt or growth
+- 66–75: Very strong; high confidence in capabilities
+- 76–80: Exceptional; rare clarity, credibility, and fit
+
+### Final Summary
+Write a short paragraph summarizing the candidate's perceived quality based on the full picture.
+
+### Follow-Up Questions
+List 1–3 probing questions you would ask the candidate in an interview to clarify doubts or explore interesting claims.'''
+
+OVERALL_ASSESSMENT_PROMPT = '''You are a senior hiring manager making a final, comprehensive assessment of a candidate.
+
+You have access to:
+1. The candidate's resume evaluation (including primary evaluator, skeptic, and synthesizer outputs)
+2. Their reasoning assessment results
+3. Their complete candidate profile
+
+Your task is to synthesize all this information into a final, holistic assessment that prioritizes the resume evaluation and reasoning assessment, while considering the full context.
+
+Provide your assessment in this format:
+
+### Overall Candidate Score (20–80)
+Weight the resume evaluation at 60% and the reasoning assessment at 40% in determining this score.
+
+### Key Strengths
+List 2-3 major strengths demonstrated across both the resume and reasoning assessment.
+
+### Areas for Development
+List 2-3 areas where the candidate could improve or develop further.
+
+### Role Recommendations
+Based on the complete picture, suggest 1-2 specific roles where this candidate would excel.
+
+### Interview Focus Areas
+List 3-4 key areas to explore in an interview, including:
+- Any inconsistencies or gaps in the resume
+- Specific reasoning responses that warrant deeper discussion
+- Areas where more context is needed
+
+### Final Recommendation
+Provide a clear, concise recommendation on whether to proceed with this candidate, including any specific concerns or reservations.'''
+
 # Create candidates directory if it doesn't exist
 CANDIDATES_DIR = "candidates"
 os.makedirs(CANDIDATES_DIR, exist_ok=True)
@@ -96,26 +264,26 @@ Consider:
 3. Key strengths demonstrated (if any)
 4. Areas where thinking could be improved (if any)
 5. Potential implications for real-world problem-solving
+6. Note any skipped questions and their impact on the overall assessment
 
 Format your response as follows:
+    
+### Final Score (20–80)
+Provide a single numerical score between 20 and 80 based on your holistic evaluation of the candidate's reasoning skills across all responses. Use the following rough guide:
+- 20–30: Weak reasoning; unclear, inconsistent, or superficial thinking.
+- 31–40: Below average; some logic present but lacks clarity, originality, or specificity.
+- 41–50: Average; competent but unremarkable reasoning, may lack depth or structure.
+- 51–60: Strong reasoning; clear, structured, and generally thoughtful responses.
+- 61–70: Very strong reasoning; insightful, well-structured, and original thinking.
+- 71–80: Exceptional reasoning; rare clarity, depth, and creativity in responses.
 
-### Overall Assessment
-[1-2 sentences summarizing the candidate's general approach and thinking style]
+Note: For skipped questions, adjust the score range downward by 5-10 points depending on the number of skips and their importance to the overall assessment.
 
-### Key Strengths
-- [Only include if there are clear strengths demonstrated]
-- [Limit to 1-2 most significant strengths]
-
-### Areas for Development
-- [Only include if there are clear areas for improvement]
-- [Limit to 1-2 most significant areas]
-
-### Implications
-[1-2 sentences about how this thinking style might translate to real-world scenarios]
+### Score Rationale
+Explain why you assigned this score using examples from the candidate's responses. Identify any consistent patterns in reasoning quality, strengths, and weaknesses. Note any skipped questions and how they affected your evaluation.
 
 Be specific and evidence-based, referencing particular aspects of the candidate's responses to support your analysis.
-If the candidate provided minimal or non-substantive responses, keep your evaluation brief and focus on the lack of engagement or depth.
-For skipped questions, note this in your analysis but focus on the quality of the responses that were provided."""
+If the candidate skipped questions, explain how this impacts your ability to fully assess their reasoning capabilities."""
 
     # Format the responses and evaluations for GPT
     context = "Here are the candidate's responses and evaluations:\n\n"
@@ -641,6 +809,91 @@ Specificity and realism of strategy: 4
     except Exception as e:
         return f"Error during evaluation: {str(e)}"
 
+def run_resume_evaluation_agents(parsed_resume_data):
+    """Run the three resume evaluation agents and return their outputs."""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return "Error: OPENAI_API_KEY environment variable not found."
+
+    try:
+        client = OpenAI(api_key=api_key)
+        
+        # Run Primary Evaluator
+        primary_evaluation = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": PRIMARY_EVALUATOR_PROMPT},
+                {"role": "user", "content": json.dumps(parsed_resume_data, indent=2)}
+            ],
+            temperature=0.3,
+            max_tokens=1000
+        )
+        primary_output = primary_evaluation.choices[0].message.content.strip()
+        
+        # Run Skeptic
+        skeptic_evaluation = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": SKEPTIC_PROMPT},
+                {"role": "user", "content": f"Resume Data:\n{json.dumps(parsed_resume_data, indent=2)}\n\nPrimary Evaluation:\n{primary_output}"}
+            ],
+            temperature=0.3,
+            max_tokens=1000
+        )
+        skeptic_output = skeptic_evaluation.choices[0].message.content.strip()
+        
+        # Run Synthesizer with resume data included
+        synthesizer_evaluation = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": SYNTHESIZER_PROMPT},
+                {"role": "user", "content": f"Resume Data:\n{json.dumps(parsed_resume_data, indent=2)}\n\nPrimary Evaluation:\n{primary_output}\n\nSkeptic Evaluation:\n{skeptic_output}"}
+            ],
+            temperature=0.3,
+            max_tokens=1000
+        )
+        synthesizer_output = synthesizer_evaluation.choices[0].message.content.strip()
+        
+        return primary_output, skeptic_output, synthesizer_output
+        
+    except Exception as e:
+        return f"Error during evaluation: {str(e)}", "", ""
+
+def generate_overall_assessment(candidate_data):
+    """Generate a comprehensive assessment of the candidate using all available data."""
+    api_key = os.environ.get('OPENAI_API_KEY')
+    if not api_key:
+        return "Error: OPENAI_API_KEY environment variable not found."
+
+    try:
+        client = OpenAI(api_key=api_key)
+        
+        # Prepare the context for the assessment
+        context = f"""Candidate Profile:
+{json.dumps(candidate_data, indent=2)}
+
+Resume Evaluation:
+Primary Evaluator: {candidate_data.get('primary_evaluator_output', 'Not available')}
+Skeptic: {candidate_data.get('skeptic_evaluator_output', 'Not available')}
+Synthesizer: {candidate_data.get('resume_synthesis', 'Not available')}
+
+Reasoning Assessment:
+Final Evaluation: {candidate_data.get('final_evaluation', 'Not available')}"""
+
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": OVERALL_ASSESSMENT_PROMPT},
+                {"role": "user", "content": context}
+            ],
+            temperature=0.3,
+            max_tokens=1500
+        )
+        return completion.choices[0].message.content.strip()
+        
+    except Exception as e:
+        return f"Error generating overall assessment: {str(e)}"
+
 def main():
     # Set page title and configuration
     st.set_page_config(
@@ -664,6 +917,13 @@ def main():
         st.session_state.current_page = 'resume'
     if 'parsed_resume_data' not in st.session_state:
         st.session_state.parsed_resume_data = None
+    # Add multi-agent evaluation session state variables
+    if 'primary_evaluator_output' not in st.session_state:
+        st.session_state.primary_evaluator_output = ""
+    if 'skeptic_evaluator_output' not in st.session_state:
+        st.session_state.skeptic_evaluator_output = ""
+    if 'resume_synthesized_evaluation' not in st.session_state:
+        st.session_state.resume_synthesized_evaluation = ""
 
     # Display app title
     st.title("Omnisight: Thinking Test MVP")
@@ -681,11 +941,14 @@ def main():
     # Step 1: Resume Upload Page
     if st.session_state.current_page == 'resume':
         st.title("Resume Upload")
+        
+        # Create form for resume upload
         with st.form("resume_form"):
             uploaded_file = st.file_uploader("Upload Resume (PDF or DOCX)", type=["pdf", "docx"])
             resume_text = st.text_area("Or paste resume text here")
             submitted = st.form_submit_button("Submit")
         
+        # Handle form submission
         if submitted:
             resume_text = ""
             
@@ -715,7 +978,45 @@ def main():
                 st.session_state.formatted_resume = formatted_text
                 st.session_state.parsed_resume_data = parsed_data
         
-        # Show Take Assessment button (moved outside the resume_parsed condition)
+        # Show evaluation button and results outside the form
+        if st.session_state.resume_parsed and st.session_state.parsed_resume_data:
+            if not st.session_state.primary_evaluator_output:  # Only show button if evaluation hasn't been run
+                if st.button("🧠 Run Evaluation"):
+                    with st.spinner("Evaluating resume..."):
+                        # Run evaluation
+                        primary_output, skeptic_output, synthesizer_output = run_resume_evaluation_agents(st.session_state.parsed_resume_data)
+                        
+                        if isinstance(primary_output, str) and primary_output.startswith("Error"):
+                            st.error(primary_output)
+                        else:
+                            # Update session state
+                            st.session_state.primary_evaluator_output = primary_output
+                            st.session_state.skeptic_evaluator_output = skeptic_output
+                            st.session_state.resume_synthesized_evaluation = synthesizer_output
+                            
+                            # Show results in containers
+                            with st.expander("🔍 Primary Evaluator Output", expanded=False):
+                                st.markdown(primary_output)
+                            
+                            with st.expander("🚨 Skeptic Evaluator Output", expanded=False):
+                                st.markdown(skeptic_output)
+                            
+                            with st.expander("🧠 Synthesized Evaluation", expanded=False):
+                                st.markdown(synthesizer_output)
+                            
+                            st.success("Evaluation complete!")
+            else:
+                # Show results if evaluation has been run
+                with st.expander("🔍 Primary Evaluator Output", expanded=False):
+                    st.markdown(st.session_state.primary_evaluator_output)
+                
+                with st.expander("🚨 Skeptic Evaluator Output", expanded=False):
+                    st.markdown(st.session_state.skeptic_evaluator_output)
+                
+                with st.expander("🧠 Synthesized Evaluation", expanded=False):
+                    st.markdown(st.session_state.resume_synthesized_evaluation)
+        
+        # Show Take Assessment button
         st.markdown("---")  # Add a separator
         if st.button("Take Assessment", key="take_assessment"):
             st.session_state.current_page = 'assessment'
@@ -731,69 +1032,121 @@ def main():
         
         with st.form(f"assessment_form_{current_question['id']}"):
             user_answer = st.text_area("Your answer:", key=f"answer_{current_question['id']}")
-            submitted = st.form_submit_button("Submit Answer")
+            
+            # Create columns for submit and skip buttons
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                submitted = st.form_submit_button("Submit Answer")
+            with col2:
+                skip_submitted = st.form_submit_button("Skip Question")
         
-        if submitted:
-            if user_answer.strip():
-                st.success("Thank you for your response!")
-                
-                # Get GPT-4 evaluation
-                with st.spinner("Evaluating your response..."):
-                    evaluation = get_completion_evaluation(user_answer)
-                
-                # Store the answer and evaluation
-                st.session_state.responses[current_question["id"]] = user_answer
-                st.session_state.evaluations[current_question["id"]] = evaluation
-                
-                # Check if all questions are answered
-                if st.session_state.question_index < len(reasoning_questions) - 1:
-                    st.session_state.question_index += 1
-                    # Clear the text box by setting the response to empty string
-                    st.session_state.responses[reasoning_questions[st.session_state.question_index]["id"]] = ""
-                    st.rerun()
-                else:
-                    # Generate combined evaluation
-                    with st.spinner("Generating combined evaluation..."):
-                        st.session_state.combined_evaluation = generate_combined_evaluation(
-                            st.session_state.responses,
-                            st.session_state.evaluations
-                        )
-                    
-                    # Save candidate data
-                    candidate_data = {
-                        "reason": "TESTING",  # Can be made configurable later
-                        "test_type": "reasoning",
-                        "resume": st.session_state.parsed_resume_data,
-                        "responses": st.session_state.responses,
-                        "evaluations": st.session_state.evaluations,
-                        "final_evaluation": st.session_state.combined_evaluation
-                    }
-                    
-                    candidate_id = save_candidate_to_file(candidate_data)
-                    st.success(f"Candidate data saved with ID: {candidate_id}")
-                    
-                    st.session_state.current_page = 'combined_evaluation'
-                    st.rerun()
-            else:
+        if submitted or skip_submitted:
+            if skip_submitted:
+                user_answer = "[SKIPPED]"
+                st.info("Question skipped.")
+            elif not user_answer.strip():
                 st.warning("Please enter a response before submitting.")
+                return
+            
+            st.success("Thank you for your response!")
+            
+            # Get GPT-4 evaluation
+            with st.spinner("Evaluating your response..."):
+                evaluation = get_completion_evaluation(user_answer)
+            
+            # Store the answer and evaluation
+            st.session_state.responses[current_question["id"]] = user_answer
+            st.session_state.evaluations[current_question["id"]] = evaluation
+            
+            # Move to next question
+            if st.session_state.question_index < len(reasoning_questions) - 1:
+                st.session_state.question_index += 1
+                # Clear the text box by setting the response to empty string
+                st.session_state.responses[reasoning_questions[st.session_state.question_index]["id"]] = ""
+                st.rerun()
+            else:
+                # Generate combined evaluation
+                with st.spinner("Generating combined evaluation..."):
+                    st.session_state.combined_evaluation = generate_combined_evaluation(
+                        st.session_state.responses,
+                        st.session_state.evaluations
+                    )
+                
+                # Save candidate data
+                candidate_data = {
+                    "reason": "TESTING",  # Can be made configurable later
+                    "test_type": "reasoning",
+                    "resume": st.session_state.parsed_resume_data,
+                    "responses": st.session_state.responses,
+                    "evaluations": st.session_state.evaluations,
+                    "final_evaluation": st.session_state.combined_evaluation,
+                    "resume_synthesis": st.session_state.resume_synthesized_evaluation,
+                    "primary_evaluator_output": st.session_state.primary_evaluator_output,
+                    "skeptic_evaluator_output": st.session_state.skeptic_evaluator_output
+                }
+                
+                candidate_id = save_candidate_to_file(candidate_data)
+                st.success(f"Candidate data saved with ID: {candidate_id}")
+                
+                st.session_state.current_page = 'combined_evaluation'
+                st.rerun()
 
     # Step 3: Combined Evaluation Page
     elif st.session_state.current_page == 'combined_evaluation' and st.session_state.combined_evaluation:
         st.markdown("## Step 3: Your Complete Evaluation")
         
-        # Display individual responses and evaluations
-        for q_id, response in st.session_state.responses.items():
+        # Create candidate data dictionary
+        candidate_data = {
+            "reason": "TESTING",  # Can be made configurable later
+            "test_type": "reasoning",
+            "resume": st.session_state.parsed_resume_data,
+            "responses": st.session_state.responses,
+            "evaluations": st.session_state.evaluations,
+            "final_evaluation": st.session_state.combined_evaluation,
+            "resume_synthesis": st.session_state.resume_synthesized_evaluation,
+            "primary_evaluator_output": st.session_state.primary_evaluator_output,
+            "skeptic_evaluator_output": st.session_state.skeptic_evaluator_output
+        }
+        
+        # Display resume
+        with st.expander("Resume", expanded=False):
+            st.markdown(format_resume(candidate_data["resume"]))
+        
+        # Display resume evaluations first
+        with st.expander("🧠 Synthesized Resume Evaluation", expanded=False):
+            st.markdown(candidate_data.get("resume_synthesis", "Not available"))
+        
+        with st.expander("🔍 Primary Evaluator Output", expanded=False):
+            st.markdown(candidate_data.get("primary_evaluator_output", "Not available"))
+        
+        with st.expander("🚨 Skeptic Evaluator Output", expanded=False):
+            st.markdown(candidate_data.get("skeptic_evaluator_output", "Not available"))
+        
+        # Display responses and evaluations
+        for q_id, response in candidate_data["responses"].items():
             question = next(q for q in reasoning_questions if q["id"] == q_id)
             with st.expander(f"Question {reasoning_questions.index(question) + 1}", expanded=False):
                 st.markdown("### Question")
                 st.write(question["text"])
-                st.markdown("### Your Response")
+                st.markdown("### Response")
                 st.write(response)
                 st.markdown("### Evaluation")
-                st.markdown(st.session_state.evaluations[q_id])
+                st.markdown(candidate_data["evaluations"][q_id])
         
-        # Display combined evaluation
-        st.markdown(st.session_state.combined_evaluation)
+        # Display final evaluation
+        with st.expander("🎯 Final Assessment Evaluation", expanded=False):
+            st.markdown(candidate_data.get("final_evaluation", "Not available"))
+        
+        # Add Overall Assessment last
+        st.markdown("---")
+        with st.expander("🌟 Overall Candidate Assessment", expanded=False):
+            if 'overall_assessment' not in candidate_data:
+                with st.spinner("Generating overall assessment..."):
+                    overall_assessment = generate_overall_assessment(candidate_data)
+                    candidate_data['overall_assessment'] = overall_assessment
+                    # Save the updated candidate data
+                    save_candidate_to_file(candidate_data)
+            st.markdown(candidate_data.get('overall_assessment', 'Not available'))
         
         # Add navigation button (removed the second column and "View All Candidates" button)
         if st.button("Start Over", key="start_over_eval"):
@@ -855,6 +1208,16 @@ def main():
                 with st.expander("Resume", expanded=False):
                     st.markdown(format_resume(candidate_data["resume"]))
                 
+                # Display resume evaluations first
+                with st.expander("🧠 Synthesized Resume Evaluation", expanded=False):
+                    st.markdown(candidate_data.get("resume_synthesis", "Not available"))
+                
+                with st.expander("🔍 Primary Evaluator Output", expanded=False):
+                    st.markdown(candidate_data.get("primary_evaluator_output", "Not available"))
+                
+                with st.expander("🚨 Skeptic Evaluator Output", expanded=False):
+                    st.markdown(candidate_data.get("skeptic_evaluator_output", "Not available"))
+                
                 # Display responses and evaluations
                 for q_id, response in candidate_data["responses"].items():
                     question = next(q for q in reasoning_questions if q["id"] == q_id)
@@ -867,8 +1230,19 @@ def main():
                         st.markdown(candidate_data["evaluations"][q_id])
                 
                 # Display final evaluation
-                st.markdown("### Final Evaluation")
-                st.markdown(candidate_data["final_evaluation"])
+                with st.expander("🎯 Final Assessment Evaluation", expanded=False):
+                    st.markdown(candidate_data.get("final_evaluation", "Not available"))
+                
+                # Add Overall Assessment last
+                st.markdown("---")
+                with st.expander("🌟 Overall Candidate Assessment", expanded=False):
+                    if 'overall_assessment' not in candidate_data:
+                        with st.spinner("Generating overall assessment..."):
+                            overall_assessment = generate_overall_assessment(candidate_data)
+                            candidate_data['overall_assessment'] = overall_assessment
+                            # Save the updated candidate data
+                            save_candidate_to_file(candidate_data)
+                    st.markdown(candidate_data.get('overall_assessment', 'Not available'))
 
     # Add keyboard shortcut for submitting response
     st.components.v1.html(
