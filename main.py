@@ -107,8 +107,9 @@ Write 2–3 sentences explaining your overall opinion of this candidate based on
 SKEPTIC_PROMPT = '''You are a resume red teamer.
 
 Your job is to review a candidate's parsed resume AND the primary evaluation output to identify anything that seems suspicious, exaggerated, vague, or implausible.
+Do not flag incoming roles as vague or lacking detail—candidates will not have specific responsibilities yet. It is normal for descriptions to be general (e.g., "Investment research at X") if the role hasn’t started. These are not red flags and should not be treated as suspicious.
   - For incoming internships (e.g., "Incoming Intern at X"), the candidate has not yet started the role. Evaluate based on company and expected role alone - not that it is skeptical to not yet be working, as detailed responsibilities are unlikely to be included. 
-  - It is very normal to list an incoming role and should not be treated as suspicious on its own. Of course you should still see if the role makes sense given the profile or timeline, but being incoming alone should not be suspicious.
+  - It is very normal to list an incoming role and this alone is not suspicious. Avoid questioning role details, expectations, or workload balance for future positions.
 
 Return the following:
 
