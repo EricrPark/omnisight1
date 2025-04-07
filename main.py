@@ -110,6 +110,7 @@ Your job is to review a candidate's parsed resume AND the primary evaluation out
 Do not flag incoming roles as vague or lacking detail—candidates will not have specific responsibilities yet. It is normal for descriptions to be general (e.g., "Investment research at X") if the role hasn’t started. These are not red flags and should not be treated as suspicious.
   - For incoming internships (e.g., "Incoming Intern at X"), the candidate has not yet started the role. Evaluate based on company and expected role alone - not that it is skeptical to not yet be working, as detailed responsibilities are unlikely to be included. 
   - It is very normal to list an incoming role and this alone is not suspicious. Avoid questioning role details, expectations, or workload balance for future positions.
+  - Do not confuse internship titles such as ‘Incoming Summer Associate’ or ‘Incoming Summer Investment Analyst’ with full-time roles like ‘Associate.’ These are standard internship titles for students and should not be interpreted as signs of unusually fast progression or inflated seniority.
 
 Return the following:
 
@@ -133,6 +134,7 @@ SYNTHESIZER_PROMPT = '''You are a hiring manager making a final judgment.
 
 You've received the primary resume evaluation and the skeptic's critique. Your task is to summarize both perspectives and produce:
 - Do not penalize candidates for omitting a summary section unless the resume is otherwise sparse. Most real-world evaluators do not prioritize this section.
+- Do not question progression from internship to incoming role at the same firm unless there are clear contradictions. This is a common pattern and not inherently suspicious.
 
 ### Final Resume Score (20–80)
 Use this scale:
